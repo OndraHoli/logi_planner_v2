@@ -11,7 +11,7 @@ import {
   type DragEndEvent 
 } from '@dnd-kit/core';
 import type { Pallet, Truck } from './types';
-import './index.css' 
+
 
 const SCALE = 0.085;
 // PŘIDÁNO: Síla magnetu na hranách (v pixelech). Jak daleko musíš táhnout ven, aby se paleta utrhla.
