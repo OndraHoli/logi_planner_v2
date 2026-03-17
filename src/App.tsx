@@ -14,25 +14,29 @@ import { toPng } from 'html-to-image';
 import { jsPDF } from 'jspdf';
 import type { Pallet, Truck } from './types';
 
-// Změněno z 0.085 na 0.85, protože počítáme o řád níž (v cm)
 const SCALE = 0.85; 
 const ESCAPE_THRESHOLD_PX = 80; 
-const SNAP_THRESHOLD_CM = 15; // Bylo 150 mm, teď 15 cm
+const SNAP_THRESHOLD_CM = 15; 
 
+// NOVÉ ROZMĚRY PALET PODLE LOGISTIČKY
 const PALLET_TEMPLATES = [
   { id: 'euro', name: 'EURO', width: 120, height: 80, color: '#16A085' },
-  { id: 'ind', name: 'Průmyslová', width: 120, height: 100, color: '#8E44AD' },
-  { id: 'half', name: 'Poloviční', width: 80, height: 60, color: '#D35400' },
-  { id: 'ibc', name: 'IBC Nádrž', width: 120, height: 100, color: '#2980B9' },
-  { id: 'gitter', name: 'Gitterbox', width: 124, height: 83.5, color: '#7f8c8d' },
+  { id: 'euro_rot', name: 'EURO ↕', width: 80, height: 120, color: '#1abc9c' },
+  { id: 'ind', name: 'Průmysl', width: 120, height: 100, color: '#8E44AD' },
+  { id: 'ind_rot', name: 'Průmysl ↕', width: 100, height: 120, color: '#9b59b6' },
+  { id: 'atyp140', name: 'Atyp 140', width: 140, height: 100, color: '#2980B9' },
+  { id: 'atyp140_rot', name: 'Atyp 140 ↕', width: 100, height: 140, color: '#3498db' },
 ];
 
+// NOVÉ ROZMĚRY AUT PODLE LOGISTIČKY
 const TRUCK_TYPES = [
-  { id: 'semi', name: 'Návěs (13.6m)', width: 1360, height: 245 },
-  { id: 'tandem', name: 'Tandem/Přívěs (7.7m)', width: 770, height: 245 },
-  { id: 'solo', name: 'Sólo 12t (7.2m)', width: 720, height: 245 },
-  { id: 'van_box', name: 'Dodávka Plachta (4.2m)', width: 420, height: 210 },
-  { id: 'van_small', name: 'Dodávka Plechovka (3.3m)', width: 330, height: 175 },
+  { id: 'kamion', name: 'Kamion', width: 1360, height: 248 },
+  { id: 'souprava', name: 'Souprava (7.7m + 7.7m)', width: 1540, height: 240 },
+  { id: 'vlek', name: 'Vlek (7.4m + 8.2m)', width: 1560, height: 240 },
+  { id: '21pal', name: '21-ti paletové auto', width: 840, height: 240 },
+  { id: '20pal', name: '20-ti paletové auto', width: 820, height: 240 },
+  { id: '18pal', name: '18-ti paletové auto', width: 720, height: 240 },
+  { id: 'jarda', name: 'Jardovo auto', width: 600, height: 240 },
 ];
 
 function TemplateItem({ template }: { template: typeof PALLET_TEMPLATES[0] }) {
@@ -175,7 +179,6 @@ function App() {
     const xPx = e.clientX - rect.left;
     const yPx = e.clientY - rect.top;
 
-    // Převod na cm a zaokrouhlení pro čisté zobrazení
     let xCm = Math.round(xPx / SCALE);
     let yCm = Math.round(yPx / SCALE);
 
@@ -218,7 +221,6 @@ function App() {
       else if (Math.abs(y - p.position.y) < SNAP_THRESHOLD_CM) snappedY = p.position.y; 
     });
 
-    // Ponecháváme možnost 1 desetinného místa pro přesnost u palet (jako je Gitterbox s 83.5 cm)
     return { x: Number(snappedX.toFixed(1)), y: Number(snappedY.toFixed(1)) };
   };
 
@@ -479,7 +481,6 @@ function App() {
                     linear-gradient(to right, #cbd5e1 1px, transparent 1px),
                     linear-gradient(to bottom, #cbd5e1 1px, transparent 1px)
                   `,
-                  // Dílek mřížky odpovídá 20 cm
                   backgroundSize: `${20 * SCALE}px ${20 * SCALE}px`,
                 }}
               >
