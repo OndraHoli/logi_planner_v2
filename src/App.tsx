@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { 
   DndContext, 
   useDraggable, 
@@ -10,27 +10,29 @@ import {
   type DragStartEvent, 
   type DragEndEvent 
 } from '@dnd-kit/core';
+import { toPng } from 'html-to-image';
+import { jsPDF } from 'jspdf';
 import type { Pallet, Truck } from './types';
 
-
-const SCALE = 0.085;
-// PŘIDÁNO: Síla magnetu na hranách (v pixelech). Jak daleko musíš táhnout ven, aby se paleta utrhla.
+// Změněno z 0.085 na 0.85, protože počítáme o řád níž (v cm)
+const SCALE = 0.85; 
 const ESCAPE_THRESHOLD_PX = 80; 
+const SNAP_THRESHOLD_CM = 15; // Bylo 150 mm, teď 15 cm
 
 const PALLET_TEMPLATES = [
-  { id: 'euro', name: 'EURO', width: 1200, height: 800, color: '#16A085' },
-  { id: 'ind', name: 'Průmyslová', width: 1200, height: 1000, color: '#8E44AD' },
-  { id: 'half', name: 'Poloviční', width: 800, height: 600, color: '#D35400' },
-  { id: 'ibc', name: 'IBC Nádrž', width: 1200, height: 1000, color: '#2980B9' },
-  { id: 'gitter', name: 'Gitterbox', width: 1240, height: 835, color: '#7f8c8d' },
+  { id: 'euro', name: 'EURO', width: 120, height: 80, color: '#16A085' },
+  { id: 'ind', name: 'Průmyslová', width: 120, height: 100, color: '#8E44AD' },
+  { id: 'half', name: 'Poloviční', width: 80, height: 60, color: '#D35400' },
+  { id: 'ibc', name: 'IBC Nádrž', width: 120, height: 100, color: '#2980B9' },
+  { id: 'gitter', name: 'Gitterbox', width: 124, height: 83.5, color: '#7f8c8d' },
 ];
 
 const TRUCK_TYPES = [
-  { id: 'semi', name: 'Návěs (13.6m)', width: 13600, height: 2450 },
-  { id: 'tandem', name: 'Tandem/Přívěs (7.7m)', width: 7700, height: 2450 },
-  { id: 'solo', name: 'Sólo 12t (7.2m)', width: 7200, height: 2450 },
-  { id: 'van_box', name: 'Dodávka Plachta (4.2m)', width: 4200, height: 2100 },
-  { id: 'van_small', name: 'Dodávka Plechovka (3.3m)', width: 3300, height: 1750 },
+  { id: 'semi', name: 'Návěs (13.6m)', width: 1360, height: 245 },
+  { id: 'tandem', name: 'Tandem/Přívěs (7.7m)', width: 770, height: 245 },
+  { id: 'solo', name: 'Sólo 12t (7.2m)', width: 720, height: 245 },
+  { id: 'van_box', name: 'Dodávka Plachta (4.2m)', width: 420, height: 210 },
+  { id: 'van_small', name: 'Dodávka Plechovka (3.3m)', width: 330, height: 175 },
 ];
 
 function TemplateItem({ template }: { template: typeof PALLET_TEMPLATES[0] }) {
@@ -47,7 +49,7 @@ function TemplateItem({ template }: { template: typeof PALLET_TEMPLATES[0] }) {
       className={`flex flex-col items-center justify-center cursor-grab transition-all hover:scale-105 ${isDragging ? 'opacity-40' : 'opacity-100'}`}
     >
       <div 
-        className="border-2 border-black/30 shadow-md rounded-sm flex items-center justify-center mb-2"
+        className="border-2 border-black/30 shadow-md flex items-center justify-center mb-2"
         style={{ 
           backgroundColor: template.color, 
           width: template.width * SCALE, 
@@ -67,40 +69,28 @@ function TemplateItem({ template }: { template: typeof PALLET_TEMPLATES[0] }) {
 
 interface DraggablePalletProps {
   pallet: Pallet;
-  truck: Truck; // PŘIDÁNO: Paleta musí znát rozměry auta, aby věděla, kde je zeď
+  truck: Truck;
   onRemove: (id: string) => void;
+  onContextMenu: (e: React.MouseEvent, id: string) => void;
 }
 
-function DraggablePallet({ pallet, truck, onRemove }: DraggablePalletProps) {
+function DraggablePallet({ pallet, truck, onRemove, onContextMenu }: DraggablePalletProps) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: String(pallet.id),
     data: { isTemplate: false }
   });
 
-  // 1. Zjistíme surovou pozici kurzoru
   let rawX = (pallet.position.x * SCALE) + (transform ? transform.x : 0);
   let rawY = (pallet.position.y * SCALE) + (transform ? transform.y : 0);
 
-  // 2. Vypočítáme, kde přesně jsou pravé a spodní stěny kamionu
   const maxX = (truck.width - pallet.width) * SCALE;
   const maxY = (truck.height - pallet.height) * SCALE;
 
-  // 3. MAGNETICKÁ LOGIKA (Osa X)
-  // Pokud jsme za stěnou (v mínusu), ale neutrhli jsme to o víc než 80px, přilepíme to na nulu
-  if (rawX < 0 && rawX >= -ESCAPE_THRESHOLD_PX) {
-    rawX = 0;
-  } 
-  // Pokud jsme za pravou stěnou, ale neutrhli jsme to, přilepíme to na pravou stěnu
-  else if (rawX > maxX && rawX <= maxX + ESCAPE_THRESHOLD_PX) {
-    rawX = maxX;
-  }
+  if (rawX < 0 && rawX >= -ESCAPE_THRESHOLD_PX) rawX = 0;
+  else if (rawX > maxX && rawX <= maxX + ESCAPE_THRESHOLD_PX) rawX = maxX;
 
-  // 4. MAGNETICKÁ LOGIKA (Osa Y) - Platí to samé pro horní a spodní stěnu
-  if (rawY < 0 && rawY >= -ESCAPE_THRESHOLD_PX) {
-    rawY = 0;
-  } else if (rawY > maxY && rawY <= maxY + ESCAPE_THRESHOLD_PX) {
-    rawY = maxY;
-  }
+  if (rawY < 0 && rawY >= -ESCAPE_THRESHOLD_PX) rawY = 0;
+  else if (rawY > maxY && rawY <= maxY + ESCAPE_THRESHOLD_PX) rawY = maxY;
 
   const style = {
     width: pallet.width * SCALE,
@@ -120,9 +110,10 @@ function DraggablePallet({ pallet, truck, onRemove }: DraggablePalletProps) {
       style={style}
       {...listeners}
       {...attributes}
+      onContextMenu={(e) => onContextMenu(e, pallet.id)}
       className="group absolute border-2 border-black/20 flex flex-col items-center justify-center cursor-move transition-[box-shadow,opacity] rounded-sm"
     >
-      <span className="text-[10px] font-black text-white uppercase drop-shadow-md leading-none tracking-wider pointer-events-none">
+      <span className="text-[10px] font-black text-white uppercase drop-shadow-md leading-none tracking-wider pointer-events-none px-1 text-center truncate w-full">
         {pallet.name}
       </span>
       <span className="text-[8px] text-white/90 font-bold mt-0.5 pointer-events-none">
@@ -132,6 +123,7 @@ function DraggablePallet({ pallet, truck, onRemove }: DraggablePalletProps) {
         onPointerDown={(e) => e.stopPropagation()}
         onClick={() => onRemove(pallet.id)}
         className="absolute -top-2 -right-2 w-5 h-5 bg-red-600 hover:bg-red-500 text-white rounded-full flex items-center justify-center text-xs shadow-lg opacity-0 group-hover:opacity-100 transition-opacity z-50 cursor-pointer border border-white/20"
+        data-html2canvas-ignore="true"
       >
         ✕
       </button>
@@ -143,12 +135,92 @@ function App() {
   const [truck, setTruck] = useState<Truck>(TRUCK_TYPES[0]);
   const [pallets, setPallets] = useState<Pallet[]>([]);
   const [activeTemplate, setActiveTemplate] = useState<any>(null);
+  
+  const [preventOverlap, setPreventOverlap] = useState(true);
+  const [enableSnap, setEnableSnap] = useState(true);
+  
+  const [contextMenu, setContextMenu] = useState<{ x: number, y: number, palletId: string } | null>(null);
+  const [cursorPos, setCursorPos] = useState<{ x: number, y: number, remX: number, remY: number } | null>(null);
 
   const { setNodeRef: setTruckRef } = useDroppable({ id: 'truck-board' });
+  const printAreaRef = useRef<HTMLDivElement>(null);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
   );
+
+  useEffect(() => {
+    const handleClick = () => setContextMenu(null);
+    window.addEventListener('click', handleClick);
+    return () => window.removeEventListener('click', handleClick);
+  }, []);
+
+  const handleContextMenu = (e: React.MouseEvent, id: string) => {
+    e.preventDefault();
+    setContextMenu({ x: e.clientX, y: e.clientY, palletId: id });
+  };
+
+  const handleRename = (id: string) => {
+    const pallet = pallets.find(p => p.id === id);
+    if (!pallet) return;
+    
+    const newName = window.prompt('Zadej nový název palety:', pallet.name);
+    if (newName !== null && newName.trim() !== '') {
+      setPallets(prev => prev.map(p => p.id === id ? { ...p, name: newName.trim() } : p));
+    }
+  };
+
+  const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const xPx = e.clientX - rect.left;
+    const yPx = e.clientY - rect.top;
+
+    // Převod na cm a zaokrouhlení pro čisté zobrazení
+    let xCm = Math.round(xPx / SCALE);
+    let yCm = Math.round(yPx / SCALE);
+
+    xCm = Math.max(0, Math.min(xCm, truck.width));
+    yCm = Math.max(0, Math.min(yCm, truck.height));
+
+    setCursorPos({
+      x: xCm,
+      y: yCm,
+      remX: Math.round((truck.width - xCm) * 10) / 10,
+      remY: Math.round((truck.height - yCm) * 10) / 10
+    });
+  };
+
+  const checkCollision = (newX: number, newY: number, width: number, height: number, ignoreId: string | null = null) => {
+    return pallets.some((p) => {
+      if (p.id === ignoreId) return false; 
+      return (
+        newX < p.position.x + p.width &&
+        newX + width > p.position.x &&
+        newY < p.position.y + p.height &&
+        newY + height > p.position.y
+      );
+    });
+  };
+
+  const applySnapping = (x: number, y: number, w: number, h: number, ignoreId: string | null = null) => {
+    let snappedX = x;
+    let snappedY = y;
+
+    pallets.forEach(p => {
+      if (p.id === ignoreId) return;
+
+      if (Math.abs((x + w) - p.position.x) < SNAP_THRESHOLD_CM) snappedX = p.position.x - w;
+      else if (Math.abs(x - (p.position.x + p.width)) < SNAP_THRESHOLD_CM) snappedX = p.position.x + p.width;
+      else if (Math.abs(x - p.position.x) < SNAP_THRESHOLD_CM) snappedX = p.position.x; 
+
+      if (Math.abs((y + h) - p.position.y) < SNAP_THRESHOLD_CM) snappedY = p.position.y - h;
+      else if (Math.abs(y - (p.position.y + p.height)) < SNAP_THRESHOLD_CM) snappedY = p.position.y + p.height;
+      else if (Math.abs(y - p.position.y) < SNAP_THRESHOLD_CM) snappedY = p.position.y; 
+    });
+
+    // Ponecháváme možnost 1 desetinného místa pro přesnost u palet (jako je Gitterbox s 83.5 cm)
+    return { x: Number(snappedX.toFixed(1)), y: Number(snappedY.toFixed(1)) };
+  };
 
   const handleDragStart = (event: DragStartEvent) => {
     const { active } = event;
@@ -161,10 +233,8 @@ function App() {
     const { active, delta } = event;
     setActiveTemplate(null);
 
-    // Převedeme odtrhávací hranici z pixelů na milimetry pro uložení do paměti
-    const THRESHOLD_MM = ESCAPE_THRESHOLD_PX / SCALE;
+    const THRESHOLD_CM = ESCAPE_THRESHOLD_PX / SCALE;
 
-    // A) VLOŽENÍ ŠABLONY Z MENU
     if (active.data.current?.isTemplate) {
       const truckEl = document.getElementById('truck-board');
       if (!truckEl) return;
@@ -187,15 +257,24 @@ function App() {
           let dropX = (itemRect.left - truckRect.left) / SCALE;
           let dropY = (itemRect.top - truckRect.top) / SCALE;
 
-          // Aplikujeme magnet i při vkládání z menu
-          const maxX_mm = truck.width - active.data.current.width;
-          const maxY_mm = truck.height - active.data.current.height;
+          if (enableSnap) {
+            const snapped = applySnapping(dropX, dropY, active.data.current.width, active.data.current.height);
+            dropX = snapped.x;
+            dropY = snapped.y;
+          }
 
-          if (dropX < 0 && dropX >= -THRESHOLD_MM) dropX = 0;
-          else if (dropX > maxX_mm && dropX <= maxX_mm + THRESHOLD_MM) dropX = maxX_mm;
+          const maxX_cm = truck.width - active.data.current.width;
+          const maxY_cm = truck.height - active.data.current.height;
 
-          if (dropY < 0 && dropY >= -THRESHOLD_MM) dropY = 0;
-          else if (dropY > maxY_mm && dropY <= maxY_mm + THRESHOLD_MM) dropY = maxY_mm;
+          if (dropX < 0 && dropX >= -THRESHOLD_CM) dropX = 0;
+          else if (dropX > maxX_cm && dropX <= maxX_cm + THRESHOLD_CM) dropX = maxX_cm;
+
+          if (dropY < 0 && dropY >= -THRESHOLD_CM) dropY = 0;
+          else if (dropY > maxY_cm && dropY <= maxY_cm + THRESHOLD_CM) dropY = maxY_cm;
+
+          if (preventOverlap && checkCollision(dropX, dropY, active.data.current.width, active.data.current.height)) {
+            return; 
+          }
 
           const newPallet: Pallet = {
             id: Date.now().toString(),
@@ -211,24 +290,34 @@ function App() {
       return;
     }
 
-    // B) TAHÁNÍ EXISTUJÍCÍ PALETY PO KAMIONU A VEN Z NĚJ
+    const draggedPallet = pallets.find((p) => String(p.id) === String(active.id));
+    if (!draggedPallet) return;
+
+    let newX = draggedPallet.position.x + (delta.x / SCALE);
+    let newY = draggedPallet.position.y + (delta.y / SCALE);
+
+    if (enableSnap) {
+      const snapped = applySnapping(newX, newY, draggedPallet.width, draggedPallet.height, draggedPallet.id);
+      newX = snapped.x;
+      newY = snapped.y;
+    }
+
+    const maxX_cm = truck.width - draggedPallet.width;
+    const maxY_cm = truck.height - draggedPallet.height;
+
+    if (newX < 0 && newX >= -THRESHOLD_CM) newX = 0;
+    else if (newX > maxX_cm && newX <= maxX_cm + THRESHOLD_CM) newX = maxX_cm;
+
+    if (newY < 0 && newY >= -THRESHOLD_CM) newY = 0;
+    else if (newY > maxY_cm && newY <= maxY_cm + THRESHOLD_CM) newY = maxY_cm;
+
+    if (preventOverlap && checkCollision(newX, newY, draggedPallet.width, draggedPallet.height, draggedPallet.id)) {
+      return; 
+    }
+
     setPallets((prev) => 
       prev.map((p) => {
         if (String(p.id) === String(active.id)) {
-          let newX = p.position.x + (delta.x / SCALE);
-          let newY = p.position.y + (delta.y / SCALE);
-
-          const maxX_mm = truck.width - p.width;
-          const maxY_mm = truck.height - p.height;
-
-          // Magnetické uložení pro osu X
-          if (newX < 0 && newX >= -THRESHOLD_MM) newX = 0;
-          else if (newX > maxX_mm && newX <= maxX_mm + THRESHOLD_MM) newX = maxX_mm;
-
-          // Magnetické uložení pro osu Y
-          if (newY < 0 && newY >= -THRESHOLD_MM) newY = 0;
-          else if (newY > maxY_mm && newY <= maxY_mm + THRESHOLD_MM) newY = maxY_mm;
-
           return { ...p, position: { x: newX, y: newY } };
         }
         return p;
@@ -245,6 +334,41 @@ function App() {
     const selectedTruck = TRUCK_TYPES.find(t => t.id === selectedId);
     if (selectedTruck) {
       setTruck({ width: selectedTruck.width, height: selectedTruck.height });
+      setPallets([]);
+    }
+  };
+
+  const handleExportPDF = async () => {
+    if (!printAreaRef.current) return;
+    try {
+      const dataUrl = await toPng(printAreaRef.current, {
+        quality: 1,
+        pixelRatio: 2,
+        backgroundColor: '#1e293b',
+        filter: (node) => {
+          if (node instanceof HTMLElement && node.dataset.html2canvasIgnore === 'true') {
+            return false;
+          }
+          return true;
+        }
+      });
+
+      const pdf = new jsPDF({
+        orientation: 'landscape',
+        unit: 'mm',
+        format: 'a4'
+      });
+
+      const pdfWidth = pdf.internal.pageSize.getWidth();
+      const pdfHeight = (printAreaRef.current.offsetHeight * pdfWidth) / printAreaRef.current.offsetWidth;
+
+      pdf.addImage(dataUrl, 'PNG', 0, 0, pdfWidth, pdfHeight);
+      
+      const dateStr = new Date().toISOString().slice(0, 10);
+      pdf.save(`plan-nakladky-${dateStr}.pdf`);
+    } catch (error) {
+      console.error('Chyba při generování PDF:', error);
+      alert('Jejda, PDF se nepovedlo vytvořit.');
     }
   };
 
@@ -265,16 +389,17 @@ function App() {
 
       <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
         
-        <div className="bg-slate-900 border-b border-slate-700 p-6 flex justify-center flex-wrap gap-8 shadow-2xl relative z-10">
+        <div className="bg-slate-900 border-b border-slate-700 p-6 flex justify-center flex-wrap gap-8 shadow-2xl relative z-10" data-html2canvas-ignore="true">
           {PALLET_TEMPLATES.map(tpl => (
             <TemplateItem key={tpl.id} template={tpl} />
           ))}
         </div>
 
         <main className="flex-1 flex items-center justify-center p-8 bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-slate-800 to-slate-900 overflow-visible">
-          <div className="bg-slate-800/80 py-10 pr-10 pl-24 rounded-3xl shadow-[0_0_50px_rgba(0,0,0,0.5)] border border-slate-700/50 backdrop-blur-sm flex flex-col items-center transition-all duration-300">
+          
+          <div ref={printAreaRef} className="bg-slate-800/80 p-10 rounded-3xl shadow-[0_0_50px_rgba(0,0,0,0.5)] border border-slate-700/50 backdrop-blur-sm flex flex-col items-center transition-all duration-300">
             
-            <div className="w-full flex justify-between items-end mb-6 -ml-14">
+            <div className="w-full flex justify-between items-end mb-6">
               <div className="flex items-center gap-4">
                 <span className="text-slate-400 text-xs uppercase tracking-widest font-bold flex items-center gap-2">
                   <div className="w-2 h-2 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]"></div>
@@ -287,41 +412,128 @@ function App() {
                 >
                   {TRUCK_TYPES.map((t) => (
                     <option key={t.id} value={t.id}>
-                      {t.name} ({t.width} × {t.height} mm)
+                      {t.name} ({t.width} × {t.height} cm)
                     </option>
                   ))}
                 </select>
               </div>
 
-              <span className="text-slate-400 text-sm font-semibold bg-slate-900/50 px-4 py-2 rounded-lg border border-slate-700/50">
-                Naloženo: <span className="text-white font-black">{pallets.length}</span> ks
-              </span>
+              <div className="flex items-center gap-4">
+                <label 
+                  className="flex items-center gap-2 cursor-pointer text-xs text-slate-300 font-medium bg-slate-900/50 px-3 py-2 rounded-lg border border-slate-700/50 hover:bg-slate-800 transition-colors"
+                  data-html2canvas-ignore="true"
+                >
+                  <input 
+                    type="checkbox" 
+                    checked={enableSnap} 
+                    onChange={(e) => setEnableSnap(e.target.checked)}
+                    className="w-4 h-4 rounded border-slate-500 text-blue-500 focus:ring-blue-500 bg-slate-800 cursor-pointer"
+                  />
+                  Magnet
+                </label>
+
+                <label 
+                  className="flex items-center gap-2 cursor-pointer text-xs text-slate-300 font-medium bg-slate-900/50 px-3 py-2 rounded-lg border border-slate-700/50 hover:bg-slate-800 transition-colors"
+                  data-html2canvas-ignore="true"
+                >
+                  <input 
+                    type="checkbox" 
+                    checked={preventOverlap} 
+                    onChange={(e) => setPreventOverlap(e.target.checked)}
+                    className="w-4 h-4 rounded border-slate-500 text-blue-500 focus:ring-blue-500 bg-slate-800 cursor-pointer"
+                  />
+                  Hlídat kolize
+                </label>
+
+                <button 
+                  onClick={handleExportPDF}
+                  data-html2canvas-ignore="true"
+                  className="bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white px-4 py-2 rounded-lg text-sm font-bold shadow-lg shadow-emerald-600/30 transition-all transform active:scale-95 flex items-center gap-2 border border-emerald-500 ml-2"
+                >
+                  📄 Uložit do PDF
+                </button>
+
+                <span className="text-slate-400 text-sm font-semibold bg-slate-900/50 px-4 py-2 rounded-lg border border-slate-700/50 ml-2">
+                  Naloženo: <span className="text-white font-black">{pallets.length}</span> ks
+                </span>
+              </div>
             </div>
 
-            <div 
-              id="truck-board"
-              ref={setTruckRef}
-              className="relative bg-slate-200 shadow-inner rounded-r-md ring-8 ring-slate-700 pointer-events-auto overflow-visible transition-all duration-500 ease-in-out"
-              style={{ 
-                width: truck.width * SCALE, 
-                height: truck.height * SCALE,
-                backgroundImage: 'radial-gradient(#94a3b8 1px, transparent 1px)',
-                backgroundSize: `${200 * SCALE}px ${200 * SCALE}px`,
-              }}
-            >
-              <div className="absolute -left-16 top-1/2 -translate-y-1/2 w-14 h-24 bg-red-600 rounded-l-2xl shadow-[-10px_0_20px_rgba(0,0,0,0.3)] border-y-4 border-l-4 border-red-700 flex items-center justify-center z-0 pointer-events-none">
+            <div className="flex items-center ml-14">
+              <div className="relative mr-4 w-14 h-24 bg-red-600 rounded-l-2xl shadow-[-10px_0_20px_rgba(0,0,0,0.3)] border-y-4 border-l-4 border-red-700 flex items-center justify-center z-0 pointer-events-none">
                 <span className="[writing-mode:vertical-lr] rotate-180 text-[10px] font-black uppercase text-red-200 tracking-[0.3em]">
                   KABINA
                 </span>
               </div>
 
-              <div className="absolute inset-0 overflow-visible pointer-events-none">
-                {pallets.map((p) => (
-                  <div key={p.id} className="pointer-events-auto inline-block transition-all duration-300">
-                    {/* ZDE PŘEDÁVÁME TRUCK DO PALETY */}
-                    <DraggablePallet pallet={p} truck={truck} onRemove={removePallet} />
-                  </div>
-                ))}
+              <div 
+                id="truck-board"
+                ref={setTruckRef}
+                onMouseMove={handleMouseMove}
+                onMouseLeave={() => setCursorPos(null)}
+                className="relative bg-slate-200 shadow-inner ring-8 ring-slate-700 pointer-events-auto overflow-visible transition-all duration-500 ease-in-out cursor-crosshair"
+                style={{ 
+                  width: truck.width * SCALE, 
+                  height: truck.height * SCALE,
+                  backgroundImage: `
+                    linear-gradient(to right, #cbd5e1 1px, transparent 1px),
+                    linear-gradient(to bottom, #cbd5e1 1px, transparent 1px)
+                  `,
+                  // Dílek mřížky odpovídá 20 cm
+                  backgroundSize: `${20 * SCALE}px ${20 * SCALE}px`,
+                }}
+              >
+                <div className="absolute inset-0 overflow-visible pointer-events-none">
+                  {pallets.map((p) => (
+                    <div key={p.id} className="pointer-events-auto inline-block transition-all duration-300">
+                      <DraggablePallet 
+                        pallet={p} 
+                        truck={truck} 
+                        onRemove={removePallet}
+                        onContextMenu={handleContextMenu}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div 
+              className="w-full mt-6 bg-[#0f172a] border border-slate-700 rounded-lg p-3 flex justify-between items-center shadow-inner"
+              data-html2canvas-ignore="true" 
+            >
+              <div className="text-xs font-mono font-medium text-slate-400 flex gap-8">
+                <div className="flex items-center gap-2">
+                  <span className="text-slate-500">X (Délka):</span>
+                  <span className="text-white bg-slate-800 px-2 py-1 rounded w-16 text-right">
+                    {cursorPos ? cursorPos.x : 0}
+                  </span>
+                  <span className="text-slate-500">cm</span>
+                  <span className="text-slate-600 mx-1">|</span>
+                  <span className="text-slate-500">Zbývá:</span>
+                  <span className="text-blue-400 bg-blue-900/30 px-2 py-1 rounded w-16 text-right">
+                    {cursorPos ? cursorPos.remX : truck.width}
+                  </span>
+                  <span className="text-slate-500">cm</span>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <span className="text-slate-500">Y (Šířka):</span>
+                  <span className="text-white bg-slate-800 px-2 py-1 rounded w-16 text-right">
+                    {cursorPos ? cursorPos.y : 0}
+                  </span>
+                  <span className="text-slate-500">cm</span>
+                  <span className="text-slate-600 mx-1">|</span>
+                  <span className="text-slate-500">Zbývá:</span>
+                  <span className="text-emerald-400 bg-emerald-900/30 px-2 py-1 rounded w-16 text-right">
+                    {cursorPos ? cursorPos.remY : truck.height}
+                  </span>
+                  <span className="text-slate-500">cm</span>
+                </div>
+              </div>
+
+              <div className="text-xs text-slate-500 italic">
+                {cursorPos ? "Pohyb v ložném prostoru..." : "Zajeďte myší nad návěs pro měření"}
               </div>
             </div>
 
@@ -346,6 +558,25 @@ function App() {
         </DragOverlay>
 
       </DndContext>
+
+      {contextMenu && (
+        <div 
+          className="fixed z-[100] bg-slate-800 border border-slate-600 shadow-2xl rounded-md py-1 min-w-[160px] overflow-hidden"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          data-html2canvas-ignore="true"
+        >
+          <button 
+            className="w-full text-left px-4 py-2 text-sm text-slate-200 hover:bg-blue-600 hover:text-white transition-colors flex items-center gap-2"
+            onClick={() => {
+              handleRename(contextMenu.palletId);
+              setContextMenu(null);
+            }}
+          >
+            ✏️ Přejmenovat
+          </button>
+        </div>
+      )}
+
     </div>
   );
 }
