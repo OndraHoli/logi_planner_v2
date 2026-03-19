@@ -17,7 +17,7 @@ import type { Pallet, Truck } from './types';
 const SCALE = 0.85; 
 const ESCAPE_THRESHOLD_PX = 80; 
 const SNAP_THRESHOLD_CM = 15; 
-const CURSOR_SNAP_CM = 10; // Jak blízko musí být kurzor k paletě, aby se přichytil
+const CURSOR_SNAP_CM = 10; 
 
 const INITIAL_TEMPLATES = [
   { id: 'euro', name: 'EURO', width: 120, height: 80 },
@@ -28,10 +28,11 @@ const INITIAL_TEMPLATES = [
   { id: 'atyp140_rot', name: 'Atyp 140 ↕', width: 100, height: 140 },
 ];
 
-const TRUCK_TYPES = [
+// Přidali jsme parametr "splitAt" pro určení, kde se auto láme (v cm)
+const INITIAL_TRUCK_TYPES = [
   { id: 'kamion', name: 'Kamion', width: 1360, height: 248 },
-  { id: 'souprava', name: 'Souprava (7.7m + 7.7m)', width: 1540, height: 240 },
-  { id: 'vlek', name: 'Vlek (7.4m + 8.2m)', width: 1560, height: 240 },
+  { id: 'souprava', name: 'Souprava (7.7m + 7.7m)', width: 1540, height: 240, splitAt: 770 },
+  { id: 'vlek', name: 'Vlek (7.4m + 8.2m)', width: 1560, height: 240, splitAt: 740 },
   { id: '21pal', name: '21-ti paletové auto', width: 840, height: 240 },
   { id: '20pal', name: '20-ti paletové auto', width: 820, height: 240 },
   { id: '18pal', name: '18-ti paletové auto', width: 720, height: 240 },
@@ -44,16 +45,8 @@ const DEFAULT_CUSTOMERS = [
   { id: 'c3', name: 'Zákazník C', color: '#2980B9' }, 
 ];
 
-// Vysoce kontrastní barvy pro další zákazníky
 const MORE_COLORS = [
-  '#F1C40F', // Zářivá žlutá
-  '#E74C3C', // Červená
-  '#8E44AD', // Fialová
-  '#00FF00', // Limetkově zelená
-  '#FF69B4', // Růžová
-  '#34495E', // Tmavě šedomodrá
-  '#8B4513', // Hnědá
-  '#00CED1', // Tyrkysová
+  '#F1C40F', '#E74C3C', '#8E44AD', '#00FF00', '#FF69B4', '#34495E', '#8B4513', '#00CED1',
 ];
 
 function TemplateItem({ template, currentColor, onDelete }: { template: typeof INITIAL_TEMPLATES[0], currentColor: string, onDelete?: (id: string) => void }) {
@@ -87,7 +80,6 @@ function TemplateItem({ template, currentColor, onDelete }: { template: typeof I
         </span>
       </div>
       
-      {/* Tlačítko na smazání vlastní šablony */}
       {onDelete && (
         <button
           onClick={(e) => {
@@ -168,7 +160,9 @@ function DraggablePallet({ pallet, truck, onRemove, onContextMenu }: DraggablePa
 }
 
 function App() {
-  const [truck, setTruck] = useState<Truck>(TRUCK_TYPES[0]);
+  const [truckTypes, setTruckTypes] = useState(INITIAL_TRUCK_TYPES);
+  const [truck, setTruck] = useState<any>(INITIAL_TRUCK_TYPES[0]);
+  
   const [pallets, setPallets] = useState<Pallet[]>([]);
   const [templates, setTemplates] = useState(INITIAL_TEMPLATES);
   
@@ -176,8 +170,13 @@ function App() {
   const [activeCustomerId, setActiveCustomerId] = useState(DEFAULT_CUSTOMERS[0].id);
   const [customerMenu, setCustomerMenu] = useState<{ x: number, y: number, customerId: string } | null>(null);
 
+  // Stavy pro vlastní paletu
   const [customW, setCustomW] = useState<number | ''>('');
   const [customH, setCustomH] = useState<number | ''>('');
+
+  // Stavy pro vlastní (atyp) kamion
+  const [customTruckW, setCustomTruckW] = useState<number | ''>('');
+  const [customTruckH, setCustomTruckH] = useState<number | ''>('');
 
   const [activeTemplate, setActiveTemplate] = useState<any>(null);
   const [preventOverlap, setPreventOverlap] = useState(true);
@@ -236,7 +235,6 @@ function App() {
 
   const handleAddCustomer = () => {
     const newId = `c${Date.now()}`;
-    // Index počítáme z celkového počtu, ale bez těch 3 výchozích
     const colorIndex = Math.max(0, customers.length - 3) % MORE_COLORS.length;
     const nextColor = MORE_COLORS[colorIndex];
     setCustomers(prev => [...prev, { id: newId, name: `Zákazník ${String.fromCharCode(65 + customers.length)}`, color: nextColor }]);
@@ -256,6 +254,22 @@ function App() {
     }
   };
 
+  const handleAddCustomTruck = () => {
+    if (customTruckW && customTruckH) {
+      const newTruck = {
+        id: `truck-${Date.now()}`,
+        name: `Atyp vůz (${customTruckW}x${customTruckH})`,
+        width: Number(customTruckW),
+        height: Number(customTruckH),
+      };
+      setTruckTypes(prev => [...prev, newTruck]);
+      setTruck(newTruck); // Okamžitě ho přepneme
+      setPallets([]); // Nové auto = čistá plocha
+      setCustomTruckW(''); 
+      setCustomTruckH('');
+    }
+  };
+
   const handleDeleteTemplate = (id: string) => {
     setTemplates(prev => prev.filter(t => t.id !== id));
   };
@@ -268,18 +282,15 @@ function App() {
     let xCm = Math.round(xPx / SCALE);
     let yCm = Math.round(yPx / SCALE);
 
-    // 1. MAGNETICKÝ KURZOR (Přichytávání na palety)
     let snappedX = xCm;
     let closestDist = CURSOR_SNAP_CM;
 
     pallets.forEach(p => {
-      // Přichytit k pravé hraně palety
       const rightEdge = p.position.x + p.width;
       if (Math.abs(xCm - rightEdge) < closestDist) {
         snappedX = rightEdge;
         closestDist = Math.abs(xCm - rightEdge);
       }
-      // Přichytit k levé hraně palety
       const leftEdge = p.position.x;
       if (Math.abs(xCm - leftEdge) < closestDist) {
         snappedX = leftEdge;
@@ -289,7 +300,6 @@ function App() {
 
     xCm = snappedX;
     
-    // Oříznutí, aby kurzor neutekl mimo nákres
     xCm = Math.max(0, Math.min(xCm, truck.width));
     yCm = Math.max(0, Math.min(yCm, truck.height));
 
@@ -447,9 +457,9 @@ function App() {
 
   const handleTruckChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const selectedId = e.target.value;
-    const selectedTruck = TRUCK_TYPES.find(t => t.id === selectedId);
+    const selectedTruck = truckTypes.find(t => t.id === selectedId);
     if (selectedTruck) {
-      setTruck({ width: selectedTruck.width, height: selectedTruck.height });
+      setTruck(selectedTruck as any);
       setPallets([]);
     }
   };
@@ -593,26 +603,50 @@ function App() {
           
           <div ref={printAreaRef} className="bg-slate-800/80 p-10 rounded-3xl shadow-[0_0_50px_rgba(0,0,0,0.5)] border border-slate-700/50 backdrop-blur-sm flex flex-col items-center transition-all duration-300 relative">
             
-            {/* HORNÍ LIŠTA NA PAPÍRU - Upraven margin */}
+            {/* HORNÍ LIŠTA NA PAPÍRU */}
             <div className="w-full flex justify-between items-end mb-16">
-              <div className="flex items-center gap-4">
-                <span className="text-slate-400 text-xs uppercase tracking-widest font-bold flex items-center gap-2">
-                  <div className="w-2 h-2 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]"></div>
-                  Typ vozu:
-                </span>
-                
-                <select 
-                  onChange={handleTruckChange}
-                  className="bg-slate-900 border border-slate-700 text-white text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block p-2 outline-none shadow-inner cursor-pointer"
-                >
-                  {TRUCK_TYPES.map((t) => (
-                    <option key={t.id} value={t.id}>
-                      {t.name} ({t.width} × {t.height} cm)
-                    </option>
-                  ))}
-                </select>
+              
+              {/* Levé menu (Nové vstupy pro Vlastní vůz a Výběr) */}
+              <div className="flex flex-col gap-3">
+                <div className="flex items-center gap-2 bg-slate-900/50 px-3 py-2 rounded-lg border border-slate-700/50 w-max" data-html2canvas-ignore="true">
+                  <span className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mr-1">Vlastní vůz (cm):</span>
+                  <input 
+                    type="number" value={customTruckW} onChange={(e) => setCustomTruckW(e.target.value ? Number(e.target.value) : '')} placeholder="Délka" 
+                    className="w-20 bg-slate-900 border border-slate-600 rounded px-2 py-1 text-xs text-white focus:ring-1 focus:ring-blue-500 focus:outline-none text-center"
+                  />
+                  <span className="text-slate-500 text-xs font-black">×</span>
+                  <input 
+                    type="number" value={customTruckH} onChange={(e) => setCustomTruckH(e.target.value ? Number(e.target.value) : '')} placeholder="Šířka" 
+                    className="w-20 bg-slate-900 border border-slate-600 rounded px-2 py-1 text-xs text-white focus:ring-1 focus:ring-blue-500 focus:outline-none text-center"
+                  />
+                  <button 
+                    onClick={handleAddCustomTruck} disabled={!customTruckW || !customTruckH}
+                    className="bg-slate-700 disabled:bg-slate-800 disabled:text-slate-600 hover:bg-slate-600 text-white text-xs font-bold px-3 py-1.5 rounded transition-colors ml-1"
+                  >
+                    + Přidat
+                  </button>
+                </div>
+
+                <div className="flex items-center gap-4">
+                  <span className="text-slate-400 text-xs uppercase tracking-widest font-bold flex items-center gap-2">
+                    <div className="w-2 h-2 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]"></div>
+                    Typ vozu:
+                  </span>
+                  <select 
+                    value={truck.id}
+                    onChange={handleTruckChange}
+                    className="bg-slate-900 border border-slate-700 text-white text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block p-2 outline-none shadow-inner cursor-pointer"
+                  >
+                    {truckTypes.map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.name} ({t.width} × {t.height} cm)
+                      </option>
+                    ))}
+                  </select>
+                </div>
               </div>
 
+              {/* Pravé menu s tlačítky */}
               <div className="flex items-center gap-4">
                 <label 
                   className="flex items-center gap-2 cursor-pointer text-xs text-slate-300 font-medium bg-slate-900/50 px-3 py-2 rounded-lg border border-slate-700/50 hover:bg-slate-800 transition-colors"
@@ -686,6 +720,23 @@ function App() {
                   backgroundSize: `${20 * SCALE}px ${20 * SCALE}px`,
                 }}
               >
+                {/* DĚLÍCÍ ČÁRA PRO SOUPRAVY */}
+                {truck.splitAt && (
+                  <div 
+                    className="absolute top-0 bottom-0 z-0 pointer-events-none flex items-center justify-center"
+                    style={{ 
+                      left: truck.splitAt * SCALE,
+                      width: '6px',
+                      transform: 'translateX(-50%)',
+                      backgroundColor: 'rgba(15, 23, 42, 0.2)',
+                      borderLeft: '3px dashed #f1c40f', // Výrazné žluté šrafování
+                      borderRight: '3px dashed #f1c40f',
+                    }}
+                  >
+                    <span className="text-[9px] text-[#f1c40f] font-black uppercase tracking-widest rotate-90 whitespace-nowrap bg-slate-900/80 px-2 py-1 rounded">Spoj</span>
+                  </div>
+                )}
+
                 {/* DYNAMICKÉ PRAVÍTKO S PŘICHYTÁVÁNÍM */}
                 {cursorPos && (
                   <div 
