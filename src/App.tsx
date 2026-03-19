@@ -17,6 +17,7 @@ import type { Pallet, Truck } from './types';
 const SCALE = 0.85; 
 const ESCAPE_THRESHOLD_PX = 80; 
 const SNAP_THRESHOLD_CM = 15; 
+const CURSOR_SNAP_CM = 10; // Jak blízko musí být kurzor k paletě, aby se přichytil
 
 const INITIAL_TEMPLATES = [
   { id: 'euro', name: 'EURO', width: 120, height: 80 },
@@ -42,36 +43,62 @@ const DEFAULT_CUSTOMERS = [
   { id: 'c2', name: 'Zákazník B', color: '#D35400' }, 
   { id: 'c3', name: 'Zákazník C', color: '#2980B9' }, 
 ];
-const MORE_COLORS = ['#8E44AD', '#F1C40F', '#C0392B', '#2C3E50', '#E67E22', '#27AE60', '#34495E'];
 
-function TemplateItem({ template, currentColor }: { template: typeof INITIAL_TEMPLATES[0], currentColor: string }) {
+// Vysoce kontrastní barvy pro další zákazníky
+const MORE_COLORS = [
+  '#F1C40F', // Zářivá žlutá
+  '#E74C3C', // Červená
+  '#8E44AD', // Fialová
+  '#00FF00', // Limetkově zelená
+  '#FF69B4', // Růžová
+  '#34495E', // Tmavě šedomodrá
+  '#8B4513', // Hnědá
+  '#00CED1', // Tyrkysová
+];
+
+function TemplateItem({ template, currentColor, onDelete }: { template: typeof INITIAL_TEMPLATES[0], currentColor: string, onDelete?: (id: string) => void }) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: `tpl-${template.id}`,
     data: { isTemplate: true, ...template, color: currentColor }
   });
 
   return (
-    <div
-      ref={setNodeRef}
-      {...listeners}
-      {...attributes}
-      className={`flex flex-col items-center justify-center cursor-grab transition-all hover:scale-105 ${isDragging ? 'opacity-40' : 'opacity-100'}`}
-    >
-      <div 
-        className="border-2 border-black/30 shadow-md flex items-center justify-center mb-2 transition-colors duration-300"
-        style={{ 
-          backgroundColor: currentColor, 
-          width: template.width * SCALE, 
-          height: template.height * SCALE 
-        }}
+    <div className="relative group">
+      <div
+        ref={setNodeRef}
+        {...listeners}
+        {...attributes}
+        className={`flex flex-col items-center justify-center cursor-grab transition-all hover:scale-105 ${isDragging ? 'opacity-40' : 'opacity-100'}`}
       >
-        <span className="text-[10px] font-black text-white uppercase drop-shadow-md text-center leading-tight">
-          {template.name}
+        <div 
+          className="border-2 border-black/30 shadow-md flex items-center justify-center mb-2 transition-colors duration-300"
+          style={{ 
+            backgroundColor: currentColor, 
+            width: template.width * SCALE, 
+            height: template.height * SCALE 
+          }}
+        >
+          <span className="text-[10px] font-black text-white uppercase drop-shadow-md text-center leading-tight">
+            {template.name}
+          </span>
+        </div>
+        <span className="text-[10px] text-slate-400 font-medium">
+          {template.width}×{template.height}
         </span>
       </div>
-      <span className="text-[10px] text-slate-400 font-medium">
-        {template.width}×{template.height}
-      </span>
+      
+      {/* Tlačítko na smazání vlastní šablony */}
+      {onDelete && (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete(template.id);
+          }}
+          className="absolute -top-2 -right-2 w-5 h-5 bg-red-600 hover:bg-red-500 text-white rounded-full flex items-center justify-center text-xs shadow-lg opacity-0 group-hover:opacity-100 transition-opacity z-50 cursor-pointer border border-white/20"
+        >
+          ✕
+        </button>
+      )}
     </div>
   );
 }
@@ -209,7 +236,9 @@ function App() {
 
   const handleAddCustomer = () => {
     const newId = `c${Date.now()}`;
-    const nextColor = MORE_COLORS[customers.length % MORE_COLORS.length];
+    // Index počítáme z celkového počtu, ale bez těch 3 výchozích
+    const colorIndex = Math.max(0, customers.length - 3) % MORE_COLORS.length;
+    const nextColor = MORE_COLORS[colorIndex];
     setCustomers(prev => [...prev, { id: newId, name: `Zákazník ${String.fromCharCode(65 + customers.length)}`, color: nextColor }]);
   };
 
@@ -227,6 +256,10 @@ function App() {
     }
   };
 
+  const handleDeleteTemplate = (id: string) => {
+    setTemplates(prev => prev.filter(t => t.id !== id));
+  };
+
   const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
     const xPx = e.clientX - rect.left;
@@ -235,6 +268,28 @@ function App() {
     let xCm = Math.round(xPx / SCALE);
     let yCm = Math.round(yPx / SCALE);
 
+    // 1. MAGNETICKÝ KURZOR (Přichytávání na palety)
+    let snappedX = xCm;
+    let closestDist = CURSOR_SNAP_CM;
+
+    pallets.forEach(p => {
+      // Přichytit k pravé hraně palety
+      const rightEdge = p.position.x + p.width;
+      if (Math.abs(xCm - rightEdge) < closestDist) {
+        snappedX = rightEdge;
+        closestDist = Math.abs(xCm - rightEdge);
+      }
+      // Přichytit k levé hraně palety
+      const leftEdge = p.position.x;
+      if (Math.abs(xCm - leftEdge) < closestDist) {
+        snappedX = leftEdge;
+        closestDist = Math.abs(xCm - leftEdge);
+      }
+    });
+
+    xCm = snappedX;
+    
+    // Oříznutí, aby kurzor neutekl mimo nákres
     xCm = Math.max(0, Math.min(xCm, truck.width));
     yCm = Math.max(0, Math.min(yCm, truck.height));
 
@@ -384,6 +439,12 @@ function App() {
     setPallets((prev) => prev.filter((p) => p.id !== idToRemove));
   };
 
+  const clearAllPallets = () => {
+    if (window.confirm('Opravdu chcete z kamionu vymazat všechny palety?')) {
+      setPallets([]);
+    }
+  };
+
   const handleTruckChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const selectedId = e.target.value;
     const selectedTruck = TRUCK_TYPES.find(t => t.id === selectedId);
@@ -426,6 +487,10 @@ function App() {
       alert('Jejda, PDF se nepovedlo vytvořit.');
     }
   };
+
+  const currentRemX = cursorPos ? cursorPos.remX : truck.width;
+  const euroHorizontalCount = Math.floor(currentRemX / 120);
+  const euroVerticalCount = Math.floor(currentRemX / 80);
 
   return (
     <div className="min-h-screen bg-slate-900 text-slate-200 font-sans flex flex-col selection:bg-blue-500/30">
@@ -480,16 +545,21 @@ function App() {
 
           <div className="w-px bg-slate-700 hidden lg:block my-2"></div>
 
-          {/* PALETY */}
+          {/* PALETY V MENU */}
           <div className="flex items-center gap-4 flex-wrap">
             {templates.map(tpl => (
-              <TemplateItem key={tpl.id} template={tpl} currentColor={activeColor} />
+              <TemplateItem 
+                key={tpl.id} 
+                template={tpl} 
+                currentColor={activeColor} 
+                onDelete={tpl.id.startsWith('custom') ? handleDeleteTemplate : undefined}
+              />
             ))}
           </div>
 
           <div className="w-px bg-slate-700 hidden lg:block my-2"></div>
 
-          {/* VLASTNÍ PALETA (UPRAVENÉ VĚTŠÍ TEXTBOXY) */}
+          {/* VLASTNÍ PALETA - Zvětšená políčka */}
           <div className="flex flex-col items-center justify-center gap-2 bg-slate-800/50 p-3 rounded-xl border border-slate-700/50">
             <span className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">Přidat atyp (cm)</span>
             <div className="flex items-center gap-2">
@@ -498,7 +568,7 @@ function App() {
                 value={customW} 
                 onChange={(e) => setCustomW(e.target.value ? Number(e.target.value) : '')} 
                 placeholder="Délka" 
-                className="w-20 bg-slate-900 border border-slate-600 rounded px-3 py-1.5 text-sm text-white focus:ring-1 focus:ring-blue-500 focus:outline-none text-center"
+                className="w-24 bg-slate-900 border border-slate-600 rounded px-3 py-1.5 text-sm text-white focus:ring-1 focus:ring-blue-500 focus:outline-none text-center"
               />
               <span className="text-slate-500 text-xs font-black">×</span>
               <input 
@@ -506,7 +576,7 @@ function App() {
                 value={customH} 
                 onChange={(e) => setCustomH(e.target.value ? Number(e.target.value) : '')} 
                 placeholder="Šířka" 
-                className="w-20 bg-slate-900 border border-slate-600 rounded px-3 py-1.5 text-sm text-white focus:ring-1 focus:ring-blue-500 focus:outline-none text-center"
+                className="w-24 bg-slate-900 border border-slate-600 rounded px-3 py-1.5 text-sm text-white focus:ring-1 focus:ring-blue-500 focus:outline-none text-center"
               />
               <button 
                 onClick={handleAddCustomTemplate}
@@ -523,7 +593,8 @@ function App() {
           
           <div ref={printAreaRef} className="bg-slate-800/80 p-10 rounded-3xl shadow-[0_0_50px_rgba(0,0,0,0.5)] border border-slate-700/50 backdrop-blur-sm flex flex-col items-center transition-all duration-300 relative">
             
-            <div className="w-full flex justify-between items-end mb-10">
+            {/* HORNÍ LIŠTA NA PAPÍRU - Upraven margin */}
+            <div className="w-full flex justify-between items-end mb-16">
               <div className="flex items-center gap-4">
                 <span className="text-slate-400 text-xs uppercase tracking-widest font-bold flex items-center gap-2">
                   <div className="w-2 h-2 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]"></div>
@@ -570,9 +641,18 @@ function App() {
                 </label>
 
                 <button 
+                  onClick={clearAllPallets}
+                  title="Vymazat všechny palety z vozu"
+                  data-html2canvas-ignore="true"
+                  className="bg-red-600/90 hover:bg-red-500 active:bg-red-700 text-white px-3 py-2 rounded-lg text-sm font-bold shadow-lg shadow-red-600/30 transition-all transform active:scale-95 flex items-center justify-center border border-red-500/50 ml-1"
+                >
+                  🗑️
+                </button>
+
+                <button 
                   onClick={handleExportPDF}
                   data-html2canvas-ignore="true"
-                  className="bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white px-4 py-2 rounded-lg text-sm font-bold shadow-lg shadow-emerald-600/30 transition-all transform active:scale-95 flex items-center gap-2 border border-emerald-500 ml-2"
+                  className="bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white px-4 py-2 rounded-lg text-sm font-bold shadow-lg shadow-emerald-600/30 transition-all transform active:scale-95 flex items-center gap-2 border border-emerald-500 ml-1"
                 >
                   📄 Uložit do PDF
                 </button>
@@ -583,7 +663,7 @@ function App() {
               </div>
             </div>
 
-            <div className="flex items-center ml-14">
+            <div className="flex items-center ml-14 mt-8">
               <div className="relative mr-4 w-14 h-24 bg-red-600 rounded-l-2xl shadow-[-10px_0_20px_rgba(0,0,0,0.3)] border-y-4 border-l-4 border-red-700 flex items-center justify-center z-0 pointer-events-none">
                 <span className="[writing-mode:vertical-lr] rotate-180 text-[10px] font-black uppercase text-red-200 tracking-[0.3em]">
                   KABINA
@@ -606,14 +686,13 @@ function App() {
                   backgroundSize: `${20 * SCALE}px ${20 * SCALE}px`,
                 }}
               >
-                {/* NOVÉ: DYNAMICKÉ PRAVÍTKO PŘÍMO NA HRANĚ NÁVĚSU */}
+                {/* DYNAMICKÉ PRAVÍTKO S PŘICHYTÁVÁNÍM */}
                 {cursorPos && (
                   <div 
-                    className="absolute top-0 bottom-0 w-px bg-blue-500/50 border-l-2 border-dashed border-blue-500/80 z-50 pointer-events-none"
+                    className="absolute top-0 bottom-0 w-px bg-blue-500/50 border-l-2 border-dashed border-blue-500/80 z-50 pointer-events-none transition-all duration-75"
                     style={{ left: cursorPos.x * SCALE }}
                     data-html2canvas-ignore="true"
                   >
-                    {/* Samotný štítek nad autem */}
                     <div className="absolute -top-10 left-0 -translate-x-1/2 flex items-center bg-slate-900 border border-slate-600 rounded-md shadow-xl whitespace-nowrap overflow-hidden">
                       <div className="px-3 py-1 bg-slate-800 text-white text-xs font-bold border-r border-slate-700 flex items-center gap-1">
                         {cursorPos.x} <span className="text-[10px] text-slate-400 font-normal">cm</span>
@@ -622,7 +701,6 @@ function App() {
                         {cursorPos.remX} <span className="text-[10px] text-emerald-600 font-normal">cm zbývá</span>
                       </div>
                     </div>
-                    {/* Trojúhelníček směřující dolů do návěsu */}
                     <div className="absolute -top-2 left-0 -translate-x-1/2 w-0 h-0 border-l-[6px] border-r-[6px] border-t-[8px] border-l-transparent border-r-transparent border-t-blue-500"></div>
                   </div>
                 )}
@@ -642,42 +720,38 @@ function App() {
               </div>
             </div>
 
-            {/* SPODNÍ HUD SE ZACHOVÁNÍM OSY Y */}
+            {/* LEGENDA ZÁKAZNÍKŮ PRO PDF EXPORT */}
+            <div className="w-full mt-10 pt-6 border-t border-slate-700/50 flex items-start gap-4 flex-wrap">
+              <span className="text-slate-400 text-sm font-bold uppercase tracking-widest mr-2">Legenda:</span>
+              {customers.map(c => (
+                <div key={`legend-${c.id}`} className="flex items-center gap-2 bg-slate-900/50 px-3 py-1.5 rounded border border-slate-700/50">
+                  <div className="w-4 h-4 rounded-sm shadow-sm" style={{ backgroundColor: c.color }}></div>
+                  <span className="text-slate-300 text-sm font-medium">{c.name}</span>
+                </div>
+              ))}
+            </div>
+
+            {/* CHYTRÝ ODHAD (SPODNÍ PANEL) */}
             <div 
-              className="w-full mt-6 bg-[#0f172a] border border-slate-700 rounded-lg p-3 flex justify-between items-center shadow-inner"
+              className="w-full mt-6 bg-[#0f172a] border border-slate-700 rounded-lg p-3 flex justify-center items-center shadow-inner"
               data-html2canvas-ignore="true" 
             >
-              <div className="text-xs font-mono font-medium text-slate-400 flex gap-8">
-                <div className="flex items-center gap-2">
-                  <span className="text-slate-500">X (Délka):</span>
-                  <span className="text-white bg-slate-800 px-2 py-1 rounded w-16 text-right">
-                    {cursorPos ? cursorPos.x : 0}
-                  </span>
-                  <span className="text-slate-500">cm</span>
-                  <span className="text-slate-600 mx-1">|</span>
-                  <span className="text-slate-500">Zbývá:</span>
-                  <span className="text-blue-400 bg-blue-900/30 px-2 py-1 rounded w-16 text-right">
-                    {cursorPos ? cursorPos.remX : truck.width}
-                  </span>
-                  <span className="text-slate-500">cm</span>
+              <div className="flex items-center gap-6">
+                <span className="text-slate-400 text-sm font-medium">
+                  {cursorPos ? "Od pravítka do konce vozu se vejde:" : "Do prázdného vozu na délku se vejde:"}
+                </span>
+                
+                <div className="flex items-center gap-2 bg-slate-800 px-3 py-1.5 rounded-md border border-slate-700">
+                  <div className="w-5 h-3.5 bg-teal-600 border border-teal-400 rounded-sm shadow-sm" title="Naležato (120 cm v ose X)"></div>
+                  <span className="text-slate-300 text-xs">EURO naležato:</span>
+                  <span className="text-white font-bold text-sm">{euroHorizontalCount} ks</span>
                 </div>
 
-                <div className="flex items-center gap-2">
-                  <span className="text-slate-500">Y (Šířka):</span>
-                  <span className="text-white bg-slate-800 px-2 py-1 rounded w-16 text-right">
-                    {cursorPos ? cursorPos.y : 0}
-                  </span>
-                  <span className="text-slate-500">cm</span>
-                  <span className="text-slate-600 mx-1">|</span>
-                  <span className="text-slate-500">Zbývá:</span>
-                  <span className="text-emerald-400 bg-emerald-900/30 px-2 py-1 rounded w-16 text-right">
-                    {cursorPos ? cursorPos.remY : truck.height}
-                  </span>
-                  <span className="text-slate-500">cm</span>
+                <div className="flex items-center gap-2 bg-slate-800 px-3 py-1.5 rounded-md border border-slate-700">
+                  <div className="w-3.5 h-5 bg-teal-600 border border-teal-400 rounded-sm shadow-sm" title="Nastojato (80 cm v ose X)"></div>
+                  <span className="text-slate-300 text-xs">EURO nastojato:</span>
+                  <span className="text-white font-bold text-sm">{euroVerticalCount} ks</span>
                 </div>
-              </div>
-              <div className="text-xs text-slate-500 italic">
-                {cursorPos ? "Pohyb v ložném prostoru..." : "Zajeďte myší nad návěs pro měření"}
               </div>
             </div>
 
@@ -703,7 +777,6 @@ function App() {
 
       </DndContext>
 
-      {/* Menu pro přejmenování palety */}
       {contextMenu && (
         <div 
           className="fixed z-[100] bg-slate-800 border border-slate-600 shadow-2xl rounded-md py-1 min-w-[160px] overflow-hidden"
@@ -722,7 +795,6 @@ function App() {
         </div>
       )}
 
-      {/* Menu pro přejmenování zákazníka */}
       {customerMenu && (
         <div 
           className="fixed z-[100] bg-slate-800 border border-slate-600 shadow-2xl rounded-md py-1 min-w-[160px] overflow-hidden"
