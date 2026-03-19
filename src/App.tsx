@@ -18,17 +18,15 @@ const SCALE = 0.85;
 const ESCAPE_THRESHOLD_PX = 80; 
 const SNAP_THRESHOLD_CM = 15; 
 
-// NOVÉ ROZMĚRY PALET PODLE LOGISTIČKY
-const PALLET_TEMPLATES = [
-  { id: 'euro', name: 'EURO', width: 120, height: 80, color: '#16A085' },
-  { id: 'euro_rot', name: 'EURO ↕', width: 80, height: 120, color: '#1abc9c' },
-  { id: 'ind', name: 'Průmysl', width: 120, height: 100, color: '#8E44AD' },
-  { id: 'ind_rot', name: 'Průmysl ↕', width: 100, height: 120, color: '#9b59b6' },
-  { id: 'atyp140', name: 'Atyp 140', width: 140, height: 100, color: '#2980B9' },
-  { id: 'atyp140_rot', name: 'Atyp 140 ↕', width: 100, height: 140, color: '#3498db' },
+const INITIAL_TEMPLATES = [
+  { id: 'euro', name: 'EURO', width: 120, height: 80 },
+  { id: 'euro_rot', name: 'EURO ↕', width: 80, height: 120 },
+  { id: 'ind', name: 'Průmysl', width: 120, height: 100 },
+  { id: 'ind_rot', name: 'Průmysl ↕', width: 100, height: 120 },
+  { id: 'atyp140', name: 'Atyp 140', width: 140, height: 100 },
+  { id: 'atyp140_rot', name: 'Atyp 140 ↕', width: 100, height: 140 },
 ];
 
-// NOVÉ ROZMĚRY AUT PODLE LOGISTIČKY
 const TRUCK_TYPES = [
   { id: 'kamion', name: 'Kamion', width: 1360, height: 248 },
   { id: 'souprava', name: 'Souprava (7.7m + 7.7m)', width: 1540, height: 240 },
@@ -39,10 +37,17 @@ const TRUCK_TYPES = [
   { id: 'jarda', name: 'Jardovo auto', width: 600, height: 240 },
 ];
 
-function TemplateItem({ template }: { template: typeof PALLET_TEMPLATES[0] }) {
+const DEFAULT_CUSTOMERS = [
+  { id: 'c1', name: 'Zákazník A', color: '#16A085' }, 
+  { id: 'c2', name: 'Zákazník B', color: '#D35400' }, 
+  { id: 'c3', name: 'Zákazník C', color: '#2980B9' }, 
+];
+const MORE_COLORS = ['#8E44AD', '#F1C40F', '#C0392B', '#2C3E50', '#E67E22', '#27AE60', '#34495E'];
+
+function TemplateItem({ template, currentColor }: { template: typeof INITIAL_TEMPLATES[0], currentColor: string }) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: `tpl-${template.id}`,
-    data: { isTemplate: true, ...template }
+    data: { isTemplate: true, ...template, color: currentColor }
   });
 
   return (
@@ -53,9 +58,9 @@ function TemplateItem({ template }: { template: typeof PALLET_TEMPLATES[0] }) {
       className={`flex flex-col items-center justify-center cursor-grab transition-all hover:scale-105 ${isDragging ? 'opacity-40' : 'opacity-100'}`}
     >
       <div 
-        className="border-2 border-black/30 shadow-md flex items-center justify-center mb-2"
+        className="border-2 border-black/30 shadow-md flex items-center justify-center mb-2 transition-colors duration-300"
         style={{ 
-          backgroundColor: template.color, 
+          backgroundColor: currentColor, 
           width: template.width * SCALE, 
           height: template.height * SCALE 
         }}
@@ -102,7 +107,7 @@ function DraggablePallet({ pallet, truck, onRemove, onContextMenu }: DraggablePa
     left: 0,
     top: 0,
     transform: `translate3d(${rawX}px, ${rawY}px, 0)`,
-    backgroundColor: pallet.color,
+    backgroundColor: pallet.color, 
     zIndex: isDragging ? 50 : 10,
     boxShadow: isDragging ? '0 20px 25px -5px rgb(0 0 0 / 0.5)' : '0 4px 6px -1px rgb(0 0 0 / 0.3)',
     opacity: isDragging ? 0.9 : 1,
@@ -138,8 +143,16 @@ function DraggablePallet({ pallet, truck, onRemove, onContextMenu }: DraggablePa
 function App() {
   const [truck, setTruck] = useState<Truck>(TRUCK_TYPES[0]);
   const [pallets, setPallets] = useState<Pallet[]>([]);
-  const [activeTemplate, setActiveTemplate] = useState<any>(null);
+  const [templates, setTemplates] = useState(INITIAL_TEMPLATES);
   
+  const [customers, setCustomers] = useState(DEFAULT_CUSTOMERS);
+  const [activeCustomerId, setActiveCustomerId] = useState(DEFAULT_CUSTOMERS[0].id);
+  const [customerMenu, setCustomerMenu] = useState<{ x: number, y: number, customerId: string } | null>(null);
+
+  const [customW, setCustomW] = useState<number | ''>('');
+  const [customH, setCustomH] = useState<number | ''>('');
+
+  const [activeTemplate, setActiveTemplate] = useState<any>(null);
   const [preventOverlap, setPreventOverlap] = useState(true);
   const [enableSnap, setEnableSnap] = useState(true);
   
@@ -149,12 +162,17 @@ function App() {
   const { setNodeRef: setTruckRef } = useDroppable({ id: 'truck-board' });
   const printAreaRef = useRef<HTMLDivElement>(null);
 
+  const activeColor = customers.find(c => c.id === activeCustomerId)?.color || '#95a5a6';
+
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
   );
 
   useEffect(() => {
-    const handleClick = () => setContextMenu(null);
+    const handleClick = () => {
+      setContextMenu(null);
+      setCustomerMenu(null);
+    };
     window.addEventListener('click', handleClick);
     return () => window.removeEventListener('click', handleClick);
   }, []);
@@ -162,15 +180,50 @@ function App() {
   const handleContextMenu = (e: React.MouseEvent, id: string) => {
     e.preventDefault();
     setContextMenu({ x: e.clientX, y: e.clientY, palletId: id });
+    setCustomerMenu(null);
+  };
+
+  const handleCustomerContextMenu = (e: React.MouseEvent, id: string) => {
+    e.preventDefault();
+    setCustomerMenu({ x: e.clientX, y: e.clientY, customerId: id });
+    setContextMenu(null);
   };
 
   const handleRename = (id: string) => {
     const pallet = pallets.find(p => p.id === id);
     if (!pallet) return;
-    
     const newName = window.prompt('Zadej nový název palety:', pallet.name);
     if (newName !== null && newName.trim() !== '') {
       setPallets(prev => prev.map(p => p.id === id ? { ...p, name: newName.trim() } : p));
+    }
+  };
+
+  const handleRenameCustomer = (id: string) => {
+    const customer = customers.find(c => c.id === id);
+    if (!customer) return;
+    const newName = window.prompt('Zadej nový název zákazníka:', customer.name);
+    if (newName !== null && newName.trim() !== '') {
+      setCustomers(prev => prev.map(c => c.id === id ? { ...c, name: newName.trim() } : c));
+    }
+  };
+
+  const handleAddCustomer = () => {
+    const newId = `c${Date.now()}`;
+    const nextColor = MORE_COLORS[customers.length % MORE_COLORS.length];
+    setCustomers(prev => [...prev, { id: newId, name: `Zákazník ${String.fromCharCode(65 + customers.length)}`, color: nextColor }]);
+  };
+
+  const handleAddCustomTemplate = () => {
+    if (customW && customH) {
+      const newTemplate = {
+        id: `custom-${Date.now()}`,
+        name: `Atyp ${customW}x${customH}`,
+        width: Number(customW),
+        height: Number(customH),
+      };
+      setTemplates(prev => [...prev, newTemplate]);
+      setCustomW(''); 
+      setCustomH('');
     }
   };
 
@@ -283,7 +336,7 @@ function App() {
             name: active.data.current.name,
             width: active.data.current.width,
             height: active.data.current.height,
-            color: active.data.current.color,
+            color: active.data.current.color, 
             position: { x: dropX, y: dropY },
           };
           setPallets((prev) => [...prev, newPallet]);
@@ -391,17 +444,86 @@ function App() {
 
       <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
         
-        <div className="bg-slate-900 border-b border-slate-700 p-6 flex justify-center flex-wrap gap-8 shadow-2xl relative z-10" data-html2canvas-ignore="true">
-          {PALLET_TEMPLATES.map(tpl => (
-            <TemplateItem key={tpl.id} template={tpl} />
-          ))}
+        <div className="bg-slate-900 border-b border-slate-700 p-6 flex justify-center items-stretch flex-wrap gap-6 shadow-2xl relative z-10" data-html2canvas-ignore="true">
+          
+          {/* ZÁKAZNÍCI */}
+          <div className="flex flex-col gap-1 bg-slate-800/50 p-3 rounded-xl border border-slate-700/50 min-w-[150px]">
+            <span className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mb-1">Zákazníci</span>
+            <div className="flex flex-col gap-1.5 overflow-y-auto max-h-[100px] pr-2 scrollbar-thin scrollbar-thumb-slate-600">
+              {customers.map(c => (
+                <label 
+                  key={c.id} 
+                  onContextMenu={(e) => handleCustomerContextMenu(e, c.id)}
+                  className="flex items-center gap-2 cursor-pointer text-sm text-slate-200 hover:text-white transition-colors group"
+                >
+                  <input 
+                    type="radio" 
+                    name="customer" 
+                    className="hidden" 
+                    checked={activeCustomerId === c.id}
+                    onChange={() => setActiveCustomerId(c.id)}
+                  />
+                  <div className={`w-3.5 h-3.5 rounded-full flex items-center justify-center border-2 ${activeCustomerId === c.id ? 'border-white' : 'border-transparent'}`} style={{ backgroundColor: c.color }}>
+                    {activeCustomerId === c.id && <div className="w-1.5 h-1.5 bg-white rounded-full"></div>}
+                  </div>
+                  <span className={activeCustomerId === c.id ? 'font-bold' : ''}>{c.name}</span>
+                </label>
+              ))}
+            </div>
+            <button 
+              onClick={handleAddCustomer} 
+              className="text-xs text-blue-400 mt-2 hover:text-blue-300 text-left flex items-center gap-1 font-medium transition-colors"
+            >
+              + Přidat zákazníka
+            </button>
+          </div>
+
+          <div className="w-px bg-slate-700 hidden lg:block my-2"></div>
+
+          {/* PALETY */}
+          <div className="flex items-center gap-4 flex-wrap">
+            {templates.map(tpl => (
+              <TemplateItem key={tpl.id} template={tpl} currentColor={activeColor} />
+            ))}
+          </div>
+
+          <div className="w-px bg-slate-700 hidden lg:block my-2"></div>
+
+          {/* VLASTNÍ PALETA (UPRAVENÉ VĚTŠÍ TEXTBOXY) */}
+          <div className="flex flex-col items-center justify-center gap-2 bg-slate-800/50 p-3 rounded-xl border border-slate-700/50">
+            <span className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">Přidat atyp (cm)</span>
+            <div className="flex items-center gap-2">
+              <input 
+                type="number" 
+                value={customW} 
+                onChange={(e) => setCustomW(e.target.value ? Number(e.target.value) : '')} 
+                placeholder="Délka" 
+                className="w-20 bg-slate-900 border border-slate-600 rounded px-3 py-1.5 text-sm text-white focus:ring-1 focus:ring-blue-500 focus:outline-none text-center"
+              />
+              <span className="text-slate-500 text-xs font-black">×</span>
+              <input 
+                type="number" 
+                value={customH} 
+                onChange={(e) => setCustomH(e.target.value ? Number(e.target.value) : '')} 
+                placeholder="Šířka" 
+                className="w-20 bg-slate-900 border border-slate-600 rounded px-3 py-1.5 text-sm text-white focus:ring-1 focus:ring-blue-500 focus:outline-none text-center"
+              />
+              <button 
+                onClick={handleAddCustomTemplate}
+                disabled={!customW || !customH}
+                className="bg-blue-600 disabled:bg-slate-700 disabled:text-slate-500 hover:bg-blue-500 text-white text-sm font-bold px-4 py-1.5 rounded shadow transition-colors ml-1"
+              >
+                + Menu
+              </button>
+            </div>
+          </div>
         </div>
 
         <main className="flex-1 flex items-center justify-center p-8 bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-slate-800 to-slate-900 overflow-visible">
           
-          <div ref={printAreaRef} className="bg-slate-800/80 p-10 rounded-3xl shadow-[0_0_50px_rgba(0,0,0,0.5)] border border-slate-700/50 backdrop-blur-sm flex flex-col items-center transition-all duration-300">
+          <div ref={printAreaRef} className="bg-slate-800/80 p-10 rounded-3xl shadow-[0_0_50px_rgba(0,0,0,0.5)] border border-slate-700/50 backdrop-blur-sm flex flex-col items-center transition-all duration-300 relative">
             
-            <div className="w-full flex justify-between items-end mb-6">
+            <div className="w-full flex justify-between items-end mb-10">
               <div className="flex items-center gap-4">
                 <span className="text-slate-400 text-xs uppercase tracking-widest font-bold flex items-center gap-2">
                   <div className="w-2 h-2 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]"></div>
@@ -484,6 +606,27 @@ function App() {
                   backgroundSize: `${20 * SCALE}px ${20 * SCALE}px`,
                 }}
               >
+                {/* NOVÉ: DYNAMICKÉ PRAVÍTKO PŘÍMO NA HRANĚ NÁVĚSU */}
+                {cursorPos && (
+                  <div 
+                    className="absolute top-0 bottom-0 w-px bg-blue-500/50 border-l-2 border-dashed border-blue-500/80 z-50 pointer-events-none"
+                    style={{ left: cursorPos.x * SCALE }}
+                    data-html2canvas-ignore="true"
+                  >
+                    {/* Samotný štítek nad autem */}
+                    <div className="absolute -top-10 left-0 -translate-x-1/2 flex items-center bg-slate-900 border border-slate-600 rounded-md shadow-xl whitespace-nowrap overflow-hidden">
+                      <div className="px-3 py-1 bg-slate-800 text-white text-xs font-bold border-r border-slate-700 flex items-center gap-1">
+                        {cursorPos.x} <span className="text-[10px] text-slate-400 font-normal">cm</span>
+                      </div>
+                      <div className="px-3 py-1 bg-emerald-900/90 text-emerald-400 text-xs font-black flex items-center gap-1">
+                        {cursorPos.remX} <span className="text-[10px] text-emerald-600 font-normal">cm zbývá</span>
+                      </div>
+                    </div>
+                    {/* Trojúhelníček směřující dolů do návěsu */}
+                    <div className="absolute -top-2 left-0 -translate-x-1/2 w-0 h-0 border-l-[6px] border-r-[6px] border-t-[8px] border-l-transparent border-r-transparent border-t-blue-500"></div>
+                  </div>
+                )}
+
                 <div className="absolute inset-0 overflow-visible pointer-events-none">
                   {pallets.map((p) => (
                     <div key={p.id} className="pointer-events-auto inline-block transition-all duration-300">
@@ -499,6 +642,7 @@ function App() {
               </div>
             </div>
 
+            {/* SPODNÍ HUD SE ZACHOVÁNÍM OSY Y */}
             <div 
               className="w-full mt-6 bg-[#0f172a] border border-slate-700 rounded-lg p-3 flex justify-between items-center shadow-inner"
               data-html2canvas-ignore="true" 
@@ -532,7 +676,6 @@ function App() {
                   <span className="text-slate-500">cm</span>
                 </div>
               </div>
-
               <div className="text-xs text-slate-500 italic">
                 {cursorPos ? "Pohyb v ložném prostoru..." : "Zajeďte myší nad návěs pro měření"}
               </div>
@@ -544,7 +687,7 @@ function App() {
         <DragOverlay dropAnimation={null}>
           {activeTemplate ? (
             <div
-              className="border-2 border-white/50 shadow-2xl flex items-center justify-center cursor-grabbing opacity-90 pointer-events-none"
+              className="border-2 border-white/50 shadow-2xl flex items-center justify-center cursor-grabbing opacity-90 pointer-events-none transition-colors duration-300"
               style={{
                 backgroundColor: activeTemplate.color,
                 width: activeTemplate.width * SCALE,
@@ -560,6 +703,7 @@ function App() {
 
       </DndContext>
 
+      {/* Menu pro přejmenování palety */}
       {contextMenu && (
         <div 
           className="fixed z-[100] bg-slate-800 border border-slate-600 shadow-2xl rounded-md py-1 min-w-[160px] overflow-hidden"
@@ -573,7 +717,26 @@ function App() {
               setContextMenu(null);
             }}
           >
-            ✏️ Přejmenovat
+            ✏️ Přejmenovat paletu
+          </button>
+        </div>
+      )}
+
+      {/* Menu pro přejmenování zákazníka */}
+      {customerMenu && (
+        <div 
+          className="fixed z-[100] bg-slate-800 border border-slate-600 shadow-2xl rounded-md py-1 min-w-[160px] overflow-hidden"
+          style={{ left: customerMenu.x, top: customerMenu.y }}
+          data-html2canvas-ignore="true"
+        >
+          <button 
+            className="w-full text-left px-4 py-2 text-sm text-slate-200 hover:bg-blue-600 hover:text-white transition-colors flex items-center gap-2"
+            onClick={() => {
+              handleRenameCustomer(customerMenu.customerId);
+              setCustomerMenu(null);
+            }}
+          >
+            ✏️ Přejmenovat zákazníka
           </button>
         </div>
       )}
