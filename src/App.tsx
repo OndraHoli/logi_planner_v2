@@ -49,6 +49,18 @@ const MORE_COLORS = [
   '#F1C40F', '#E74C3C', '#8E44AD', '#00FF00', '#FF69B4', '#34495E', '#8B4513', '#00CED1',
 ];
 
+class CtrlAwarePointerSensor extends PointerSensor {
+  static activators = [
+    {
+      eventName: 'onPointerDown' as const,
+      handler: ({ nativeEvent: event }: { nativeEvent: PointerEvent }) => {
+        if (event.ctrlKey || !event.isPrimary || event.button !== 0) return false;
+        return true;
+      },
+    },
+  ];
+}
+
 function TemplateItem({ template, currentColor, onDelete }: { template: typeof INITIAL_TEMPLATES[0], currentColor: string, onDelete?: (id: string) => void }) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: `tpl-${template.id}`,
@@ -100,25 +112,34 @@ interface DraggablePalletProps {
   truck: Truck;
   onRemove: (id: string) => void;
   onContextMenu: (e: React.MouseEvent, id: string) => void;
+  isSelected: boolean;
+  groupDragDelta: { x: number; y: number } | null;
 }
 
-function DraggablePallet({ pallet, truck, onRemove, onContextMenu }: DraggablePalletProps) {
+function DraggablePallet({ pallet, truck, onRemove, onContextMenu, isSelected, groupDragDelta }: DraggablePalletProps) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: String(pallet.id),
     data: { isTemplate: false }
   });
 
-  let rawX = (pallet.position.x * SCALE) + (transform ? transform.x : 0);
-  let rawY = (pallet.position.y * SCALE) + (transform ? transform.y : 0);
+  const effectiveDelta = isDragging ? transform : (isSelected && groupDragDelta ? groupDragDelta : null);
+
+  let rawX = (pallet.position.x * SCALE) + (effectiveDelta ? effectiveDelta.x : 0);
+  let rawY = (pallet.position.y * SCALE) + (effectiveDelta ? effectiveDelta.y : 0);
 
   const maxX = (truck.width - pallet.width) * SCALE;
   const maxY = (truck.height - pallet.height) * SCALE;
 
-  if (rawX < 0 && rawX >= -ESCAPE_THRESHOLD_PX) rawX = 0;
-  else if (rawX > maxX && rawX <= maxX + ESCAPE_THRESHOLD_PX) rawX = maxX;
+  const insideTruck = pallet.position.x >= 0 && pallet.position.x <= truck.width - pallet.width
+    && pallet.position.y >= 0 && pallet.position.y <= truck.height - pallet.height;
 
-  if (rawY < 0 && rawY >= -ESCAPE_THRESHOLD_PX) rawY = 0;
-  else if (rawY > maxY && rawY <= maxY + ESCAPE_THRESHOLD_PX) rawY = maxY;
+  if (insideTruck) {
+    if (rawX < 0 && rawX >= -ESCAPE_THRESHOLD_PX) rawX = 0;
+    else if (rawX > maxX && rawX <= maxX + ESCAPE_THRESHOLD_PX) rawX = maxX;
+
+    if (rawY < 0 && rawY >= -ESCAPE_THRESHOLD_PX) rawY = 0;
+    else if (rawY > maxY && rawY <= maxY + ESCAPE_THRESHOLD_PX) rawY = maxY;
+  }
 
   const style = {
     width: pallet.width * SCALE,
@@ -139,7 +160,7 @@ function DraggablePallet({ pallet, truck, onRemove, onContextMenu }: DraggablePa
       {...listeners}
       {...attributes}
       onContextMenu={(e) => onContextMenu(e, pallet.id)}
-      className="group absolute border-2 border-black/20 flex flex-col items-center justify-center cursor-move transition-[box-shadow,opacity] rounded-sm"
+      className={`group absolute border-2 ${isSelected ? 'border-blue-400 ring-2 ring-blue-400/60' : 'border-black/20'} flex flex-col items-center justify-center cursor-move transition-[box-shadow,opacity] rounded-sm`}
     >
       <span className="text-[10px] font-black text-white uppercase drop-shadow-md leading-none tracking-wider pointer-events-none px-1 text-center truncate w-full">
         {pallet.name}
@@ -185,13 +206,18 @@ function App() {
   const [contextMenu, setContextMenu] = useState<{ x: number, y: number, palletId: string } | null>(null);
   const [cursorPos, setCursorPos] = useState<{ x: number, y: number, remX: number, remY: number } | null>(null);
 
+  const [selectedPalletIds, setSelectedPalletIds] = useState<string[]>([]);
+  const [selectionBox, setSelectionBox] = useState<{ startX: number; startY: number; currentX: number; currentY: number } | null>(null);
+  const [groupDragDelta, setGroupDragDelta] = useState<{ x: number; y: number } | null>(null);
+  const isSelectingRef = useRef(false);
+
   const { setNodeRef: setTruckRef } = useDroppable({ id: 'truck-board' });
   const printAreaRef = useRef<HTMLDivElement>(null);
 
   const activeColor = customers.find(c => c.id === activeCustomerId)?.color || '#95a5a6';
 
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
+    useSensor(CtrlAwarePointerSensor, { activationConstraint: { distance: 5 } })
   );
 
   useEffect(() => {
@@ -205,8 +231,48 @@ function App() {
 
   const handleContextMenu = (e: React.MouseEvent, id: string) => {
     e.preventDefault();
+    setSelectedPalletIds([]);
     setContextMenu({ x: e.clientX, y: e.clientY, palletId: id });
     setCustomerMenu(null);
+  };
+
+  const handleTruckMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!e.ctrlKey || e.button !== 0) return;
+    e.preventDefault();
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    isSelectingRef.current = true;
+    setSelectedPalletIds([]);
+    setSelectionBox({ startX: x, startY: y, currentX: x, currentY: y });
+  };
+
+  const handleTruckMouseUp = (_e: React.MouseEvent<HTMLDivElement>) => {
+    if (!isSelectingRef.current) return;
+    isSelectingRef.current = false;
+    setSelectionBox(prev => {
+      if (!prev) return null;
+      const selX = Math.min(prev.startX, prev.currentX) / SCALE;
+      const selY = Math.min(prev.startY, prev.currentY) / SCALE;
+      const selW = Math.abs(prev.currentX - prev.startX) / SCALE;
+      const selH = Math.abs(prev.currentY - prev.startY) / SCALE;
+      const selected = pallets
+        .filter(p =>
+          p.position.x < selX + selW &&
+          p.position.x + p.width > selX &&
+          p.position.y < selY + selH &&
+          p.position.y + p.height > selY
+        )
+        .map(p => p.id);
+      setSelectedPalletIds(selected);
+      return null;
+    });
+  };
+
+  const handleDragMove = (event: any) => {
+    if (selectedPalletIds.includes(String(event.active.id))) {
+      setGroupDragDelta({ x: event.delta.x, y: event.delta.y });
+    }
   };
 
   const handleCustomerContextMenu = (e: React.MouseEvent, id: string) => {
@@ -274,8 +340,7 @@ function App() {
         height: Number(customTruckH),
       };
       setTruckTypes(prev => [...prev, newTruck]);
-      setTruck(newTruck); // Okamžitě ho přepneme
-      setPallets([]); // Nové auto = čistá plocha
+      setTruck(newTruck);
       setCustomTruckW(''); 
       setCustomTruckH('');
     }
@@ -287,6 +352,11 @@ function App() {
 
   const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
+
+    if (isSelectingRef.current) {
+      setSelectionBox(prev => prev ? { ...prev, currentX: e.clientX - rect.left, currentY: e.clientY - rect.top } : null);
+    }
+
     const xPx = e.clientX - rect.left;
     const yPx = e.clientY - rect.top;
 
@@ -358,6 +428,7 @@ function App() {
     if (active.data.current?.isTemplate) {
       setActiveTemplate(active.data.current);
     }
+    setGroupDragDelta(null);
   };
 
   const handleDragEnd = (event: DragEndEvent) => {
@@ -374,55 +445,56 @@ function App() {
       const itemRect = active.rect.current.translated;
 
       if (itemRect) {
-        const itemWidth = active.data.current.width * SCALE;
-        const itemHeight = active.data.current.height * SCALE;
-        const centerX = itemRect.left + itemWidth / 2;
-        const centerY = itemRect.top + itemHeight / 2;
+        let dropX = (itemRect.left - truckRect.left) / SCALE;
+        let dropY = (itemRect.top - truckRect.top) / SCALE;
 
-        if (
-          centerX >= truckRect.left &&
-          centerX <= truckRect.right &&
-          centerY >= truckRect.top &&
-          centerY <= truckRect.bottom
-        ) {
-          let dropX = (itemRect.left - truckRect.left) / SCALE;
-          let dropY = (itemRect.top - truckRect.top) / SCALE;
-
-          if (enableSnap) {
-            const snapped = applySnapping(dropX, dropY, active.data.current.width, active.data.current.height);
-            dropX = snapped.x;
-            dropY = snapped.y;
-          }
-
-          const maxX_cm = truck.width - active.data.current.width;
-          const maxY_cm = truck.height - active.data.current.height;
-
-          if (dropX < 0 && dropX >= -THRESHOLD_CM) dropX = 0;
-          else if (dropX > maxX_cm && dropX <= maxX_cm + THRESHOLD_CM) dropX = maxX_cm;
-
-          if (dropY < 0 && dropY >= -THRESHOLD_CM) dropY = 0;
-          else if (dropY > maxY_cm && dropY <= maxY_cm + THRESHOLD_CM) dropY = maxY_cm;
-
-          if (preventOverlap && checkCollision(dropX, dropY, active.data.current.width, active.data.current.height)) {
-            return; 
-          }
-
-          const newPallet: Pallet = {
-            id: Date.now().toString(),
-            name: active.data.current.name,
-            width: active.data.current.width,
-            height: active.data.current.height,
-            color: active.data.current.color, 
-            position: { x: dropX, y: dropY },
-          };
-          setPallets((prev) => [...prev, newPallet]);
+        if (enableSnap) {
+          const snapped = applySnapping(dropX, dropY, active.data.current.width, active.data.current.height);
+          dropX = snapped.x;
+          dropY = snapped.y;
         }
+
+        const maxX_cm = truck.width - active.data.current.width;
+        const maxY_cm = truck.height - active.data.current.height;
+
+        if (dropX < 0 && dropX >= -THRESHOLD_CM) dropX = 0;
+        else if (dropX > maxX_cm && dropX <= maxX_cm + THRESHOLD_CM) dropX = maxX_cm;
+
+        if (dropY < 0 && dropY >= -THRESHOLD_CM) dropY = 0;
+        else if (dropY > maxY_cm && dropY <= maxY_cm + THRESHOLD_CM) dropY = maxY_cm;
+
+        if (preventOverlap && checkCollision(dropX, dropY, active.data.current.width, active.data.current.height)) {
+          return;
+        }
+
+        const newPallet: Pallet = {
+          id: Date.now().toString(),
+          name: active.data.current.name,
+          width: active.data.current.width,
+          height: active.data.current.height,
+          color: active.data.current.color,
+          position: { x: dropX, y: dropY },
+        };
+        setPallets((prev) => [...prev, newPallet]);
       }
       return;
     }
 
+    setGroupDragDelta(null);
+
     const draggedPallet = pallets.find((p) => String(p.id) === String(active.id));
     if (!draggedPallet) return;
+
+    if (selectedPalletIds.includes(draggedPallet.id) && selectedPalletIds.length > 1) {
+      const dx = delta.x / SCALE;
+      const dy = delta.y / SCALE;
+      setPallets(prev => prev.map(p =>
+        selectedPalletIds.includes(p.id)
+          ? { ...p, position: { x: p.position.x + dx, y: p.position.y + dy } }
+          : p
+      ));
+      return;
+    }
 
     let newX = draggedPallet.position.x + (delta.x / SCALE);
     let newY = draggedPallet.position.y + (delta.y / SCALE);
@@ -436,11 +508,16 @@ function App() {
     const maxX_cm = truck.width - draggedPallet.width;
     const maxY_cm = truck.height - draggedPallet.height;
 
-    if (newX < 0 && newX >= -THRESHOLD_CM) newX = 0;
-    else if (newX > maxX_cm && newX <= maxX_cm + THRESHOLD_CM) newX = maxX_cm;
+    const startedInsideTruck = draggedPallet.position.x >= 0 && draggedPallet.position.x <= maxX_cm
+      && draggedPallet.position.y >= 0 && draggedPallet.position.y <= maxY_cm;
 
-    if (newY < 0 && newY >= -THRESHOLD_CM) newY = 0;
-    else if (newY > maxY_cm && newY <= maxY_cm + THRESHOLD_CM) newY = maxY_cm;
+    if (startedInsideTruck) {
+      if (newX < 0 && newX >= -THRESHOLD_CM) newX = 0;
+      else if (newX > maxX_cm && newX <= maxX_cm + THRESHOLD_CM) newX = maxX_cm;
+
+      if (newY < 0 && newY >= -THRESHOLD_CM) newY = 0;
+      else if (newY > maxY_cm && newY <= maxY_cm + THRESHOLD_CM) newY = maxY_cm;
+    }
 
     if (preventOverlap && checkCollision(newX, newY, draggedPallet.width, draggedPallet.height, draggedPallet.id)) {
       return; 
@@ -471,7 +548,6 @@ function App() {
     const selectedTruck = truckTypes.find(t => t.id === selectedId);
     if (selectedTruck) {
       setTruck(selectedTruck as any);
-      setPallets([]);
     }
   };
 
@@ -528,7 +604,7 @@ function App() {
         </div>
       </header>
 
-      <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
+      <DndContext sensors={sensors} onDragStart={handleDragStart} onDragMove={handleDragMove} onDragEnd={handleDragEnd}>
         
         <div className="bg-slate-900 border-b border-slate-700 p-6 flex justify-center items-stretch flex-wrap gap-6 shadow-2xl relative z-10" data-html2canvas-ignore="true">
           
@@ -709,17 +785,20 @@ function App() {
             </div>
 
             <div className="flex items-center ml-14 mt-8">
-              <div className="relative mr-4 w-14 h-24 bg-red-600 rounded-l-2xl shadow-[-10px_0_20px_rgba(0,0,0,0.3)] border-y-4 border-l-4 border-red-700 flex items-center justify-center z-0 pointer-events-none">
-                <span className="[writing-mode:vertical-lr] rotate-180 text-[10px] font-black uppercase text-red-200 tracking-[0.3em]">
+              <div className="relative mr-5 w-10 h-35 bg-red-600 shadow-[-10px_0_20px_rgba(0,0,0,0.3)] border-y-4 border-l-4 border-red-700 flex items-center justify-center z-0 pointer-events-none">
+                <span className="[writing-mode:vertical-lr] rotate-180 text-[14px] font-black uppercase text-red-200 tracking-[0.3em]">
                   KABINA
                 </span>
               </div>
 
-              <div 
+              <div
                 id="truck-board"
                 ref={setTruckRef}
+                onMouseDown={handleTruckMouseDown}
                 onMouseMove={handleMouseMove}
-                onMouseLeave={() => setCursorPos(null)}
+                onMouseUp={handleTruckMouseUp}
+                onMouseLeave={() => { setCursorPos(null); if (isSelectingRef.current) { isSelectingRef.current = false; setSelectionBox(null); } }}
+                onContextMenu={(e) => { if (selectedPalletIds.length > 0) { e.preventDefault(); setSelectedPalletIds([]); } }}
                 className="relative bg-slate-200 shadow-inner ring-8 ring-slate-700 pointer-events-auto overflow-visible transition-all duration-500 ease-in-out cursor-crosshair"
                 style={{ 
                   width: truck.width * SCALE, 
@@ -767,14 +846,30 @@ function App() {
                   </div>
                 )}
 
+                {selectionBox && (() => {
+                  const x = Math.min(selectionBox.startX, selectionBox.currentX);
+                  const y = Math.min(selectionBox.startY, selectionBox.currentY);
+                  const w = Math.abs(selectionBox.currentX - selectionBox.startX);
+                  const h = Math.abs(selectionBox.currentY - selectionBox.startY);
+                  return (
+                    <div
+                      className="absolute pointer-events-none z-50 border-2 border-blue-400 bg-blue-400/15"
+                      style={{ left: x, top: y, width: w, height: h }}
+                      data-html2canvas-ignore="true"
+                    />
+                  );
+                })()}
+
                 <div className="absolute inset-0 overflow-visible pointer-events-none">
                   {pallets.map((p) => (
                     <div key={p.id} className="pointer-events-auto inline-block transition-all duration-300">
-                      <DraggablePallet 
-                        pallet={p} 
-                        truck={truck} 
+                      <DraggablePallet
+                        pallet={p}
+                        truck={truck}
                         onRemove={removePallet}
                         onContextMenu={handleContextMenu}
+                        isSelected={selectedPalletIds.includes(p.id)}
+                        groupDragDelta={selectedPalletIds.includes(p.id) ? groupDragDelta : null}
                       />
                     </div>
                   ))}
