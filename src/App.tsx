@@ -215,6 +215,17 @@ function App() {
     setContextMenu(null);
   };
 
+  const handleRotate = (id: string) => {
+    setPallets(prev => prev.map(p => {
+      if (p.id !== id) return p;
+      const newWidth = p.height;
+      const newHeight = p.width;
+      const clampedX = Math.min(p.position.x, truck.width - newWidth);
+      const clampedY = Math.min(p.position.y, truck.height - newHeight);
+      return { ...p, width: newWidth, height: newHeight, position: { x: Math.max(0, clampedX), y: Math.max(0, clampedY) } };
+    }));
+  };
+
   const handleRename = (id: string) => {
     const pallet = pallets.find(p => p.id === id);
     if (!pallet) return;
@@ -834,7 +845,16 @@ function App() {
           style={{ left: contextMenu.x, top: contextMenu.y }}
           data-html2canvas-ignore="true"
         >
-          <button 
+          <button
+            className="w-full text-left px-4 py-2 text-sm text-slate-200 hover:bg-blue-600 hover:text-white transition-colors flex items-center gap-2"
+            onClick={() => {
+              handleRotate(contextMenu.palletId);
+              setContextMenu(null);
+            }}
+          >
+            🔄 Otočit paletu
+          </button>
+          <button
             className="w-full text-left px-4 py-2 text-sm text-slate-200 hover:bg-blue-600 hover:text-white transition-colors flex items-center gap-2"
             onClick={() => {
               handleRename(contextMenu.palletId);
