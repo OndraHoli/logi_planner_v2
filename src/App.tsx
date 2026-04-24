@@ -591,18 +591,8 @@ function App() {
 
   return (
     <div className="min-h-screen bg-slate-900 text-slate-200 font-sans flex flex-col selection:bg-blue-500/30">
-      <header className="bg-slate-950 border-b border-slate-800 px-8 py-5 flex justify-between items-center shadow-lg z-20 relative">
-        <div className="flex items-center gap-4">
-          <div className="w-10 h-10 bg-blue-600 rounded-lg flex items-center justify-center shadow-lg shadow-blue-600/20">
-            <span className="text-xl font-black text-white">L</span>
-          </div>
-          <div>
-            <h1 className="text-2xl font-black text-slate-100 tracking-tight leading-none">
-              LOGI-PLANER <span className="text-blue-500">v2.0</span>
-            </h1>
-          </div>
-        </div>
-      </header>
+      
+      
 
       <DndContext sensors={sensors} onDragStart={handleDragStart} onDragMove={handleDragMove} onDragEnd={handleDragEnd}>
         
