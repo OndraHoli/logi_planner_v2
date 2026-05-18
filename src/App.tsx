@@ -557,7 +557,7 @@ function App() {
       const dataUrl = await toPng(printAreaRef.current, {
         quality: 1,
         pixelRatio: 2,
-        backgroundColor: '#1e293b',
+        backgroundColor: '#ffffff',
         filter: (node) => {
           if (node instanceof HTMLElement && node.dataset.html2canvasIgnore === 'true') {
             return false;
